@@ -13,29 +13,32 @@ Like.init(
         id: {
             type: DataTypes.INTEGER,
             autoIncrement: true,
-            primaryKey: true
+            primaryKey: true,
         },
 
         review_id: {
             type: DataTypes.INTEGER,
-            allowNull: false
+            allowNull: false,
+            unique: 'UQ_LIKES_review_user',
         },
 
         user_id: {
             type: DataTypes.INTEGER,
-            allowNull: false
+            allowNull: false,
+            unique: 'UQ_LIKES_review_user',
         },
 
         created_at: {
             type: DataTypes.DATE,
-            allowNull: false
-        }
+            allowNull: false,
+            defaultValue: DataTypes.NOW,
+        },
     },
     {
         sequelize,
         tableName: 'LIKES',
-        timestamps: false
-    }
+        timestamps: false,
+    },
 );
 
 export default Like;

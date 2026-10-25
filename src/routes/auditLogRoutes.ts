@@ -1,79 +1,60 @@
 import { Router } from 'express';
 import { AuditLog } from '../models';
+import { authenticate } from '../middlewares/authenticate';
+import { authorize } from '../middlewares/authorize';
+import AppError from '../errors/AppError';
 
 const router = Router();
 
-/*
-GET /api/audit-logs
-Daftar audit log
-*/
-router.get('/', async (_req, res) => {
+// GET /api/audit-logs — log berisi informasi internal, hanya admin.
+router.get('/', authenticate, authorize('admin'), async (_req, res, next) => {
     try {
-        const logs = await AuditLog.findAll({
-            order: [['id', 'DESC']]
-        });
-
-        res.json({
-            success: true,
-            data: logs
-        });
+        const logs = await AuditLog.findAll({ order: [['id', 'DESC']] });
+        res.status(200).json({ success: true, data: logs });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal mengambil audit log'
-        });
+        next(error);
     }
 });
 
-/*
-POST /api/audit-logs
-Membuat audit log
-*/
-router.post('/', async (req, res) => {
+// POST /api/audit-logs — hanya admin; user_id tidak diambil dari body.
+router.post('/', authenticate, authorize('admin'), async (req, res, next) => {
     try {
-        const {
-            user_id,
-            action,
-            target_table,
-            target_id,
-            metadata
-        } = req.body ?? {};
+        const { action, target_table, target_id, metadata } = req.body ?? {};
+        if (typeof action !== 'string' || !action.trim() || action.trim().length > 100) {
+            throw new AppError('action wajib diisi dan maksimal 100 karakter', 400);
+        }
+        if (typeof target_table !== 'string' || !target_table.trim() || target_table.trim().length > 100) {
+            throw new AppError('target_table wajib diisi dan maksimal 100 karakter', 400);
+        }
 
-        if (!action || !target_table) {
-            return res.status(400).json({
-                success: false,
-                message: 'action dan target_table wajib diisi'
-            });
+        let parsedTargetId: number | null = null;
+        if (target_id !== undefined && target_id !== null && target_id !== '') {
+            parsedTargetId = Number(target_id);
+            if (!Number.isInteger(parsedTargetId) || parsedTargetId <= 0) {
+                throw new AppError('target_id harus berupa bilangan bulat positif', 400);
+            }
+        }
+
+        const metadataText = metadata === undefined || metadata === null
+            ? null
+            : typeof metadata === 'string' ? metadata : JSON.stringify(metadata);
+
+        if (metadataText !== null && metadataText.length > 1000) {
+            throw new AppError('metadata maksimal 1000 karakter', 400);
         }
 
         const log = await AuditLog.create({
-            user_id: user_id ?? null,
-            action,
-            target_table,
-            target_id: target_id ?? null,
-            metadata:
-                typeof metadata === 'string'
-                    ? metadata
-                    : metadata
-                        ? JSON.stringify(metadata)
-                        : null,
-            created_at: new Date()
+            user_id: req.user!.id,
+            action: action.trim(),
+            target_table: target_table.trim(),
+            target_id: parsedTargetId,
+            metadata: metadataText,
+            created_at: new Date(),
         });
 
-        res.status(201).json({
-            success: true,
-            message: 'Audit log berhasil dibuat',
-            data: log
-        });
+        res.status(201).json({ success: true, message: 'Audit log berhasil dibuat', data: log });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal membuat audit log'
-        });
+        next(error);
     }
 });
 

@@ -5,8 +5,8 @@ class Stall extends Model {
     declare id: number;
     declare owner_id: number;
     declare name: string;
-    declare category: string;
-    declare location: string;
+    declare category: string | null;
+    declare location: string | null;
     declare description: string | null;
     declare avg_rating: number;
     declare review_count: number;
@@ -18,54 +18,57 @@ Stall.init(
         id: {
             type: DataTypes.INTEGER,
             autoIncrement: true,
-            primaryKey: true
+            primaryKey: true,
         },
 
         owner_id: {
             type: DataTypes.INTEGER,
-            allowNull: false
+            allowNull: false,
         },
 
         name: {
-            type: DataTypes.STRING(150),
-            allowNull: false
+            type: DataTypes.STRING(100),
+            allowNull: false,
         },
 
         category: {
-            type: DataTypes.STRING(100),
-            allowNull: false
+            type: DataTypes.STRING(50),
+            allowNull: true,
         },
 
         location: {
-            type: DataTypes.STRING(200),
-            allowNull: false
+            type: DataTypes.STRING(100),
+            allowNull: true,
         },
 
         description: {
-            type: DataTypes.STRING(500),
-            allowNull: true
+            type: DataTypes.TEXT,
+            allowNull: true,
         },
 
         avg_rating: {
             type: DataTypes.DECIMAL(3, 2),
-            allowNull: false
+            allowNull: false,
+            defaultValue: 0,
         },
 
         review_count: {
             type: DataTypes.INTEGER,
-            allowNull: false
+            allowNull: false,
+            defaultValue: 0,
         },
 
         created_at: {
             type: DataTypes.DATE,
-            allowNull: false
-        }
+            allowNull: false,
+            defaultValue: DataTypes.NOW,
+        },
     },
     {
         sequelize,
         tableName: 'STALLS',
-        timestamps: false
-    }
+        timestamps: false,
+    },
 );
 
 export default Stall;

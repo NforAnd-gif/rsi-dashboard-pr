@@ -15,39 +15,47 @@ User.init(
         id: {
             type: DataTypes.INTEGER,
             autoIncrement: true,
-            primaryKey: true
+            primaryKey: true,
         },
 
         name: {
             type: DataTypes.STRING(100),
-            allowNull: false
+            allowNull: false,
         },
 
         email: {
             type: DataTypes.STRING(150),
-            allowNull: false
+            allowNull: false,
+            unique: 'UQ_USERS_email',
+            validate: {
+                isEmail: true,
+            },
         },
 
         password_hash: {
             type: DataTypes.STRING(255),
-            allowNull: false
+            allowNull: false,
         },
 
         role: {
             type: DataTypes.STRING(20),
-            allowNull: false
+            allowNull: false,
+            validate: {
+                isIn: [['admin', 'owner', 'customer']],
+            },
         },
 
         created_at: {
             type: DataTypes.DATE,
-            allowNull: false
-        }
+            allowNull: false,
+            defaultValue: DataTypes.NOW,
+        },
     },
     {
         sequelize,
         tableName: 'USERS',
-        timestamps: false
-    }
+        timestamps: false,
+    },
 );
 
 export default User;

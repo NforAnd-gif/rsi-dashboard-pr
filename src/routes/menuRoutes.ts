@@ -1,197 +1,114 @@
 import { Router } from 'express';
 import { MenuItem, Stall } from '../models';
+import { authenticate } from '../middlewares/authenticate';
+import AppError from '../errors/AppError';
 
 const router = Router();
 
-/*
-GET /api/stalls/:stallId/menu
-Daftar menu sebuah kantin
-*/
-router.get('/stalls/:stallId/menu', async (req, res) => {
+function positiveId(value: unknown, label = 'ID') {
+    const id = Number(value);
+    if (!Number.isInteger(id) || id <= 0) throw new AppError(`${label} tidak valid`, 400);
+    return id;
+}
+
+function validateMenuInput(body: any, partial = false) {
+    if (!partial || body.name !== undefined) {
+        if (typeof body.name !== 'string' || body.name.trim().length < 1 || body.name.trim().length > 150) {
+            throw new AppError('Nama menu wajib diisi dan maksimal 150 karakter', 400);
+        }
+    }
+    if (!partial || body.price !== undefined) {
+        const price = Number(body.price);
+        if (body.price === '' || body.price === null || !Number.isFinite(price) || price < 0) {
+            throw new AppError('Harga harus berupa angka nol atau lebih', 400);
+        }
+    }
+    if (body.is_available !== undefined && typeof body.is_available !== 'boolean') {
+        throw new AppError('is_available harus berupa boolean', 400);
+    }
+}
+
+async function ensureStallAccess(stall: Stall, userId: number, role: string) {
+    if (role === 'admin' || Number(stall.owner_id) === userId) return;
+    throw new AppError('Tidak memiliki izin untuk mengubah menu kantin ini', 403);
+}
+
+async function getMenuAndCheckAccess(menuId: number, userId: number, role: string) {
+    const menu = await MenuItem.findByPk(menuId);
+    if (!menu) throw new AppError('Menu tidak ditemukan', 404);
+    const stall = await Stall.findByPk(Number(menu.stall_id));
+    if (!stall) throw new AppError('Kantin terkait tidak ditemukan', 404);
+    await ensureStallAccess(stall, userId, role);
+    return menu;
+}
+
+// GET /api/stalls/:stallId/menu — JOIN stall agar data relasi ikut dikembalikan.
+router.get('/stalls/:stallId/menu', async (req, res, next) => {
     try {
-        const stallId = Number(req.params.stallId);
-
-        if (!Number.isInteger(stallId) || stallId <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'ID kantin tidak valid'
-            });
-        }
-
+        const stallId = positiveId(req.params.stallId, 'ID kantin');
         const stall = await Stall.findByPk(stallId);
+        if (!stall) throw new AppError('Kantin tidak ditemukan', 404);
 
-        if (!stall) {
-            return res.status(404).json({
-                success: false,
-                message: 'Kantin tidak ditemukan'
-            });
-        }
-
-        const menu = await MenuItem.findAll({
-            where: {
-                stall_id: stallId
-            },
-            order: [['id', 'ASC']]
+        const menus = await MenuItem.findAll({
+            where: { stall_id: stallId },
+            include: [{ model: Stall, as: 'stall', attributes: ['id', 'name', 'category', 'location'] }],
+            order: [['id', 'ASC']],
         });
-
-        res.json({
-            success: true,
-            data: menu
-        });
+        res.status(200).json({ success: true, data: menus });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal mengambil menu'
-        });
+        next(error);
     }
 });
 
-/*
-POST /api/stalls/:stallId/menu
-Tambah menu
-*/
-router.post('/stalls/:stallId/menu', async (req, res) => {
+// POST /api/stalls/:stallId/menu
+router.post('/stalls/:stallId/menu', authenticate, async (req, res, next) => {
     try {
-        const stallId = Number(req.params.stallId);
-
-        const {
-            name,
-            price,
-            is_available
-        } = req.body;
-
-        if (!name || price === undefined) {
-            return res.status(400).json({
-                success: false,
-                message: 'name dan price wajib diisi'
-            });
-        }
-
+        const stallId = positiveId(req.params.stallId, 'ID kantin');
         const stall = await Stall.findByPk(stallId);
+        if (!stall) throw new AppError('Kantin tidak ditemukan', 404);
+        await ensureStallAccess(stall, req.user!.id, req.user!.role);
 
-        if (!stall) {
-            return res.status(404).json({
-                success: false,
-                message: 'Kantin tidak ditemukan'
-            });
-        }
-
-        if (Number(price) < 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Harga tidak boleh negatif'
-            });
-        }
-
+        validateMenuInput(req.body ?? {});
         const menu = await MenuItem.create({
             stall_id: stallId,
-            name,
-            price,
-            is_available:
-                is_available !== undefined
-                    ? is_available
-                    : true
+            name: req.body.name.trim(),
+            price: Number(req.body.price),
+            is_available: req.body.is_available ?? true,
         });
 
-        res.status(201).json({
-            success: true,
-            message: 'Menu berhasil ditambahkan',
-            data: menu
-        });
+        res.status(201).json({ success: true, message: 'Menu berhasil dibuat', data: menu });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal menambahkan menu'
-        });
+        next(error);
     }
 });
 
-/*
-PUT /api/menu/:id
-Update menu
-*/
-router.put('/menu/:id', async (req, res) => {
+// PUT /api/menu/:id
+router.put('/menu/:id', authenticate, async (req, res, next) => {
     try {
-        const id = Number(req.params.id);
+        const menuId = positiveId(req.params.id, 'ID menu');
+        const menu = await getMenuAndCheckAccess(menuId, req.user!.id, req.user!.role);
+        validateMenuInput(req.body ?? {}, true);
 
-        const menu = await MenuItem.findByPk(id);
+        if (req.body.name !== undefined) menu.name = req.body.name.trim();
+        if (req.body.price !== undefined) menu.price = Number(req.body.price);
+        if (req.body.is_available !== undefined) menu.is_available = req.body.is_available;
 
-        if (!menu) {
-            return res.status(404).json({
-                success: false,
-                message: 'Menu tidak ditemukan'
-            });
-        }
-
-        const {
-            name,
-            price,
-            is_available
-        } = req.body;
-
-        if (price !== undefined && Number(price) < 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'Harga tidak boleh negatif'
-            });
-        }
-
-        await menu.update({
-            name: name ?? menu.name,
-            price: price ?? menu.price,
-            is_available:
-                is_available ?? menu.is_available
-        });
-
-        res.json({
-            success: true,
-            message: 'Menu berhasil diperbarui',
-            data: menu
-        });
+        await menu.save();
+        res.status(200).json({ success: true, message: 'Menu berhasil diperbarui', data: menu });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal memperbarui menu'
-        });
+        next(error);
     }
 });
 
-/*
-DELETE /api/menu/:id
-Hapus menu
-*/
-router.delete('/menu/:id', async (req, res) => {
+// DELETE /api/menu/:id
+router.delete('/menu/:id', authenticate, async (req, res, next) => {
     try {
-        const id = Number(req.params.id);
-
-        const menu = await MenuItem.findByPk(id);
-
-        if (!menu) {
-            return res.status(404).json({
-                success: false,
-                message: 'Menu tidak ditemukan'
-            });
-        }
-
+        const menuId = positiveId(req.params.id, 'ID menu');
+        const menu = await getMenuAndCheckAccess(menuId, req.user!.id, req.user!.role);
         await menu.destroy();
-
-        res.json({
-            success: true,
-            message: 'Menu berhasil dihapus'
-        });
+        res.status(200).json({ success: true, message: 'Menu berhasil dihapus' });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal menghapus menu'
-        });
+        next(error);
     }
 });
 

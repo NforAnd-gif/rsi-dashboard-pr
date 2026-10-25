@@ -1,118 +1,73 @@
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import { User } from '../models';
+import { authenticate } from '../middlewares/authenticate';
+import { authorize } from '../middlewares/authorize';
+import AppError from '../errors/AppError';
 
 const router = Router();
 
-/*
-GET /api/users
-Daftar user
-*/
-router.get('/', async (_req, res) => {
+function publicUser(user: User) {
+    const result = user.toJSON() as Record<string, unknown>;
+    delete result.password_hash;
+    return result;
+}
+
+// GET /api/users — daftar pengguna hanya untuk admin.
+router.get('/', authenticate, authorize('admin'), async (_req, res, next) => {
     try {
         const users = await User.findAll({
-            attributes: [
-                'id',
-                'name',
-                'email',
-                'role',
-                'created_at'
-            ],
-            order: [['id', 'ASC']]
+            attributes: ['id', 'name', 'email', 'role', 'created_at'],
+            order: [['id', 'ASC']],
         });
-
-        res.json({
-            success: true,
-            data: users
-        });
+        res.status(200).json({ success: true, data: users });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal mengambil data user'
-        });
+        next(error);
     }
 });
 
-/*
-POST /api/users
-Membuat user baru
-*/
-router.post('/', async (req, res) => {
+// POST /api/users — administrasi akun; gunakan "password", bukan password_hash.
+// Pendaftaran publik tetap menggunakan POST /api/auth/register.
+router.post('/', authenticate, authorize('admin'), async (req, res, next) => {
     try {
-        const {
-            name,
-            email,
-            password_hash,
-            role
-        } = req.body ?? {};
+        const { name, email, password, role } = req.body ?? {};
 
-        if (
-            !name ||
-            !email ||
-            !password_hash ||
-            !role
-        ) {
-            return res.status(400).json({
-                success: false,
-                message:
-                    'name, email, password_hash, dan role wajib diisi'
-            });
+        if (typeof name !== 'string' || name.trim().length < 3 || name.trim().length > 100) {
+            throw new AppError('Nama wajib diisi (3–100 karakter)', 400);
+        }
+        if (typeof email !== 'string' ||
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
+            email.trim().length > 150) {
+            throw new AppError('Email tidak valid', 400);
+        }
+        if (typeof password !== 'string' || password.length < 8 || password.length > 72) {
+            throw new AppError('Password harus terdiri dari 8–72 karakter', 400);
+        }
+        const allowedRoles = ['admin', 'owner', 'customer'];
+        if (role !== undefined && !allowedRoles.includes(role)) {
+            throw new AppError('Role harus admin, owner, atau customer', 400);
         }
 
-        const validRoles = [
-            'admin',
-            'owner',
-            'customer'
-        ];
+        const normalizedEmail = email.trim().toLowerCase();
+        const existing = await User.findOne({ where: { email: normalizedEmail } });
+        if (existing) throw new AppError('Email sudah terdaftar', 409);
 
-        if (!validRoles.includes(role)) {
-            return res.status(400).json({
-                success: false,
-                message:
-                    'role harus admin, owner, atau customer'
-            });
-        }
-
-        const existingUser = await User.findOne({
-            where: {
-                email
-            }
-        });
-
-        if (existingUser) {
-            return res.status(409).json({
-                success: false,
-                message: 'Email sudah digunakan'
-            });
-        }
-
+        const password_hash = await bcrypt.hash(password, 12);
         const user = await User.create({
-            name,
-            email,
+            name: name.trim(),
+            email: normalizedEmail,
             password_hash,
-            role,
-            created_at: new Date()
+            role: role ?? 'customer',
+            created_at: new Date(),
         });
 
         res.status(201).json({
             success: true,
-            message: 'User berhasil dibuat',
-            data: {
-                id: user.id,
-                name: user.name,
-                email: user.email,
-                role: user.role,
-                created_at: user.created_at
-            }
+            message: 'Pengguna berhasil dibuat',
+            data: publicUser(user),
         });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal membuat user'
-        });
+        next(error);
     }
 });
 

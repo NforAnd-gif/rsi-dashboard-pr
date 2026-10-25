@@ -1,98 +1,66 @@
 import { Router } from 'express';
 import { Flag, Review, User } from '../models';
+import { authenticate } from '../middlewares/authenticate';
+import { authorize } from '../middlewares/authorize';
+import AppError from '../errors/AppError';
+import { writeAuditLog } from '../utils/auditLog';
 
 const router = Router();
+const validStatuses = ['pending', 'resolved', 'dismissed'] as const;
 
-/*
-GET /api/flags
-Daftar laporan review
-*/
-router.get('/', async (_req, res) => {
+// GET /api/flags — hanya admin karena hasilnya memuat laporan pengguna.
+router.get('/', authenticate, authorize('admin'), async (_req, res, next) => {
     try {
         const flags = await Flag.findAll({
             include: [
                 {
                     model: Review,
                     as: 'review',
-                    attributes: [
-                        'id',
-                        'stall_id',
-                        'user_id',
-                        'rating',
-                        'comment'
-                    ]
+                    attributes: ['id', 'stall_id', 'user_id', 'rating', 'comment'],
                 },
                 {
                     model: User,
                     as: 'reporter',
-                    attributes: ['id', 'name', 'email']
-                }
+                    attributes: ['id', 'name'],
+                },
             ],
-            order: [['created_at', 'DESC']]
+            order: [['created_at', 'DESC']],
         });
-
-        res.json({
-            success: true,
-            data: flags
-        });
+        res.status(200).json({ success: true, data: flags });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal mengambil laporan'
-        });
+        next(error);
     }
 });
 
-/*
-PUT /api/flags/:id
-Mengubah status laporan
-*/
-router.put('/:id', async (req, res) => {
+// PUT /api/flags/:id — hanya admin yang boleh memutuskan status laporan.
+router.put('/:id', authenticate, authorize('admin'), async (req, res, next) => {
     try {
         const id = Number(req.params.id);
-        const { status } = req.body;
+        if (!Number.isInteger(id) || id <= 0) throw new AppError('ID flag tidak valid', 400);
 
-        const validStatuses = [
-            'pending',
-            'resolved',
-            'dismissed'
-        ];
-
-        if (!validStatuses.includes(status)) {
-            return res.status(400).json({
-                success: false,
-                message:
-                    'Status harus pending, resolved, atau dismissed'
-            });
+        const status = req.body?.status;
+        if (typeof status !== 'string' || !validStatuses.includes(status as typeof validStatuses[number])) {
+            throw new AppError('Status harus pending, resolved, atau dismissed', 400);
         }
 
         const flag = await Flag.findByPk(id);
+        if (!flag) throw new AppError('Laporan tidak ditemukan', 404);
 
-        if (!flag) {
-            return res.status(404).json({
-                success: false,
-                message: 'Laporan tidak ditemukan'
-            });
-        }
+        const previousStatus = flag.status;
+        flag.status = status as typeof validStatuses[number];
+        await flag.save();
 
-        await flag.update({
-            status
+        await writeAuditLog({
+            user_id: req.user!.id,
+            action: 'UPDATE_FLAG_STATUS',
+            target_table: 'FLAGS',
+            target_id: id,
+            metadata: { previous_status: previousStatus, status },
         });
 
-        res.json({
-            success: true,
-            message: 'Status laporan berhasil diperbarui',
-            data: flag
-        });
+        res.status(200).json({ success: true, message: 'Status laporan berhasil diperbarui', data: flag });
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            message: 'Gagal memperbarui laporan'
-        });
+        next(error);
     }
 });
 

@@ -1,3 +1,4 @@
+
 import { Router } from 'express';
 import { Op } from 'sequelize';
 
@@ -8,489 +9,353 @@ import {
     Review
 } from '../models';
 
+import { authenticate } from '../middlewares/authenticate';
+import { authorize } from '../middlewares/authorize';
+import {
+    authorizeStallOwnerOrAdmin
+} from '../middlewares/stallAuthorization';
+
+import { validate } from '../middlewares/validate';
+import {
+    idParamSchema,
+    stallQuerySchema,
+    createStallSchema,
+    updateStallSchema,
+    type StallQuery,
+    type CreateStallInput,
+    type UpdateStallInput
+} from '../schemas/stallSchema';
+
+import AppError from '../errors/AppError';
+
 const router = Router();
 
 /*
 ==================================================
 GET /api/stalls
-Daftar semua kantin
-+ Search
-+ Pagination
+Daftar kantin
+- Search
+- Filter category
+- Pagination
+- Public
 ==================================================
 */
-router.get('/', async (req, res) => {
-    try {
-        const page = Math.max(
-            Number(req.query.page) || 1,
-            1
-        );
-
-        const limit = Math.min(
-            Math.max(
-                Number(req.query.limit) || 10,
-                1
-            ),
-            100
-        );
-
-        const offset = (page - 1) * limit;
-
-        const search =
-            typeof req.query.search === 'string'
-                ? req.query.search.trim()
-                : '';
-
-        const where = search
-            ? {
-                  [Op.or]: [
-                      {
-                          name: {
-                              [Op.like]: `%${search}%`
-                          }
-                      },
-                      {
-                          category: {
-                              [Op.like]: `%${search}%`
-                          }
-                      }
-                  ]
-              }
-            : undefined;
-
-        const result = await Stall.findAndCountAll({
-            where,
-
-            include: [
-                {
-                    model: User,
-                    as: 'owner',
-                    attributes: [
-                        'id',
-                        'name',
-                        'email'
-                    ]
-                }
-            ],
-
-            limit,
-            offset,
-
-            order: [
-                ['id', 'ASC']
-            ]
-        });
-
-        return res.status(200).json({
-            success: true,
-            data: result.rows,
-            pagination: {
+router.get(
+    '/',
+    validate(stallQuerySchema, 'query'),
+    async (req, res, next) => {
+        try {
+            const {
                 page,
                 limit,
-                total: result.count,
-                totalPages: Math.ceil(
-                    result.count / limit
-                )
+                search,
+                category
+            } = req.query as unknown as StallQuery;
+
+            const offset = (page - 1) * limit;
+
+            const filters: Record<string, unknown>[] = [];
+
+            if (search) {
+                filters.push({
+                    [Op.or]: [
+                        {
+                            name: {
+                                [Op.like]: `%${search}%`
+                            }
+                        },
+                        {
+                            category: {
+                                [Op.like]: `%${search}%`
+                            }
+                        }
+                    ]
+                });
             }
-        });
 
-    } catch (error) {
-        console.error(
-            'GET STALLS ERROR:',
-            error
-        );
+            if (category) {
+                filters.push({
+                    category: {
+                        [Op.like]: `%${category}%`
+                    }
+                });
+            }
 
-        return res.status(500).json({
-            success: false,
-            message: 'Gagal mengambil data kantin'
-        });
+            const where = filters.length
+                ? { [Op.and]: filters }
+                : undefined;
+
+            const result = await Stall.findAndCountAll({
+                where,
+                include: [
+                    {
+                        model: User,
+                        as: 'owner',
+                        attributes: [
+                            'id',
+                            'name',
+                            'email'
+                        ]
+                    }
+                ],
+                limit,
+                offset,
+                order: [['id', 'ASC']]
+            });
+
+            res.status(200).json({
+                success: true,
+                data: result.rows,
+                pagination: {
+                    page,
+                    limit,
+                    total: result.count,
+                    totalPages: Math.ceil(
+                        result.count / limit
+                    )
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
     }
-});
-
+);
 
 /*
 ==================================================
 POST /api/stalls
-Membuat kantin baru
+Membuat kantin
+- Hanya owner/admin
+- owner_id berasal dari JWT
 ==================================================
 */
-router.post('/', async (req, res) => {
-    try {
-        const {
-            owner_id,
-            name,
-            category,
-            location,
-            description
-        } = req.body ?? {};
+router.post(
+    '/',
+    authenticate,
+    authorize('owner', 'admin'),
+    validate(createStallSchema, 'body'),
+    async (req, res, next) => {
+        try {
+            const {
+                name,
+                category,
+                location,
+                description
+            } = req.body as CreateStallInput;
 
-        const ownerId = Number(owner_id);
+            const ownerId = req.user!.id;
 
-        // Validasi input
-        if (
-            !Number.isInteger(ownerId) ||
-            ownerId <= 0
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'owner_id wajib berupa ID yang valid'
+            const owner = await User.findByPk(ownerId);
+
+            if (!owner) {
+                throw new AppError(
+                    'Pengguna tidak ditemukan',
+                    401
+                );
+            }
+
+            const stall = await Stall.create({
+                owner_id: ownerId,
+                name,
+                category: category ?? null,
+                location: location ?? null,
+                description: description ?? null,
+                avg_rating: 0,
+                review_count: 0,
+                created_at: new Date()
             });
-        }
 
-        if (
-            typeof name !== 'string' ||
-            !name.trim()
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'name wajib diisi'
+            res.status(201).json({
+                success: true,
+                message: 'Kantin berhasil dibuat',
+                data: stall
             });
+        } catch (error) {
+            next(error);
         }
-
-        if (
-            typeof category !== 'string' ||
-            !category.trim()
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'category wajib diisi'
-            });
-        }
-
-        // Cek owner
-        const owner = await User.findByPk(ownerId);
-
-        if (!owner) {
-            return res.status(404).json({
-                success: false,
-                message: 'Owner tidak ditemukan'
-            });
-        }
-
-        // Membuat data stall
-        const stall = await Stall.create({
-            owner_id: ownerId,
-            name: name.trim(),
-            category: category.trim(),
-            location:
-                typeof location === 'string'
-                    ? location.trim()
-                    : null,
-            description:
-                typeof description === 'string'
-                    ? description.trim()
-                    : null,
-            avg_rating: 0,
-            review_count: 0,
-            created_at: new Date()
-        });
-
-        return res.status(201).json({
-            success: true,
-            message: 'Kantin berhasil dibuat',
-            data: stall
-        });
-
-    } catch (error) {
-        console.error(
-            'POST STALL ERROR:',
-            error
-        );
-
-        return res.status(500).json({
-            success: false,
-            message: 'Gagal membuat kantin',
-            error:
-                error instanceof Error
-                    ? error.message
-                    : String(error)
-        });
     }
-});
-
+);
 
 /*
 ==================================================
 GET /api/stalls/:id
 Detail kantin
-+ Owner
-+ Menu
-+ Reviews
-+ User review
+- Owner
+- Menu
+- Reviews
+- User review
+- Public
 ==================================================
 */
-router.get('/:id', async (req, res) => {
-    try {
-        const id = Number(req.params.id);
+router.get(
+    '/:id',
+    validate(idParamSchema, 'params'),
+    async (req, res, next) => {
+        try {
+            const id = Number(req.params.id);
 
-        if (
-            !Number.isInteger(id) ||
-            id <= 0
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'ID kantin tidak valid'
+            const stall = await Stall.findByPk(id, {
+                include: [
+                    {
+                        model: User,
+                        as: 'owner',
+                        attributes: [
+                            'id',
+                            'name',
+                            'email'
+                        ]
+                    },
+                    {
+                        model: MenuItem,
+                        as: 'menuItems',
+                        attributes: [
+                            'id',
+                            'name',
+                            'price',
+                            'is_available'
+                        ]
+                    },
+                    {
+                        model: Review,
+                        as: 'reviews',
+                        attributes: [
+                            'id',
+                            'rating',
+                            'comment',
+                            'like_count',
+                            'created_at',
+                            'updated_at'
+                        ],
+                        include: [
+                            {
+                                model: User,
+                                as: 'user',
+                                attributes: [
+                                    'id',
+                                    'name'
+                                ]
+                            }
+                        ]
+                    }
+                ]
             });
-        }
 
-        const stall = await Stall.findByPk(id, {
-            include: [
-                {
-                    model: User,
-                    as: 'owner',
-                    attributes: [
-                        'id',
-                        'name',
-                        'email'
-                    ]
-                },
+            if (!stall) {
+                throw new AppError(
+                    'Kantin tidak ditemukan',
+                    404
+                );
+            }
 
-                {
-                    model: MenuItem,
-                    as: 'menuItems',
-                    attributes: [
-                        'id',
-                        'name',
-                        'price',
-                        'is_available'
-                    ]
-                },
-
-                {
-                    model: Review,
-                    as: 'reviews',
-
-                    attributes: [
-                        'id',
-                        'rating',
-                        'comment',
-                        'like_count',
-                        'created_at',
-                        'updated_at'
-                    ],
-
-                    include: [
-                        {
-                            model: User,
-                            as: 'user',
-                            attributes: [
-                                'id',
-                                'name'
-                            ]
-                        }
-                    ]
-                }
-            ]
-        });
-
-        if (!stall) {
-            return res.status(404).json({
-                success: false,
-                message: 'Kantin tidak ditemukan'
+            res.status(200).json({
+                success: true,
+                data: stall
             });
+        } catch (error) {
+            next(error);
         }
-
-        return res.status(200).json({
-            success: true,
-            data: stall
-        });
-
-    } catch (error) {
-        console.error(
-            'GET STALL DETAIL ERROR:',
-            error
-        );
-
-        return res.status(500).json({
-            success: false,
-            message: 'Gagal mengambil detail kantin'
-        });
     }
-});
-
+);
 
 /*
 ==================================================
 PUT /api/stalls/:id
 Mengubah data kantin
+- Admin boleh mengubah semua kantin
+- Owner hanya boleh mengubah kantin sendiri
 ==================================================
 */
-router.put('/:id', async (req, res) => {
-    try {
-        const id = Number(req.params.id);
+router.put(
+    '/:id',
+    authenticate,
+    validate(idParamSchema, 'params'),
+    authorizeStallOwnerOrAdmin,
+    validate(updateStallSchema, 'body'),
+    async (req, res, next) => {
+        try {
+            const id = Number(req.params.id);
 
-        if (
-            !Number.isInteger(id) ||
-            id <= 0
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'ID kantin tidak valid'
+            const stall = await Stall.findByPk(id);
+
+            if (!stall) {
+                throw new AppError(
+                    'Kantin tidak ditemukan',
+                    404
+                );
+            }
+
+            const {
+                name,
+                category,
+                location,
+                description
+            } = req.body as UpdateStallInput;
+
+            // owner_id sengaja tidak bisa diubah melalui body.
+            if (name !== undefined) {
+                stall.name = name;
+            }
+
+            if (category !== undefined) {
+                stall.category = category;
+            }
+
+            if (location !== undefined) {
+                stall.location = location;
+            }
+
+            if (description !== undefined) {
+                stall.description = description;
+            }
+
+            await stall.save();
+
+            res.status(200).json({
+                success: true,
+                message: 'Data kantin berhasil diperbarui',
+                data: stall
             });
+        } catch (error) {
+            next(error);
         }
-
-        const stall = await Stall.findByPk(id);
-
-        if (!stall) {
-            return res.status(404).json({
-                success: false,
-                message: 'Kantin tidak ditemukan'
-            });
-        }
-
-        const {
-            owner_id,
-            name,
-            category,
-            location,
-            description
-        } = req.body ?? {};
-
-        // Jika owner_id dikirim, cek owner
-        if (owner_id !== undefined) {
-            const ownerId = Number(owner_id);
-
-            if (
-                !Number.isInteger(ownerId) ||
-                ownerId <= 0
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'owner_id tidak valid'
-                });
-            }
-
-            const owner = await User.findByPk(ownerId);
-
-            if (!owner) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Owner tidak ditemukan'
-                });
-            }
-
-            stall.owner_id = ownerId;
-        }
-
-        if (name !== undefined) {
-            if (
-                typeof name !== 'string' ||
-                !name.trim()
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'name tidak valid'
-                });
-            }
-
-            stall.name = name.trim();
-        }
-
-        if (category !== undefined) {
-            if (
-                typeof category !== 'string' ||
-                !category.trim()
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'category tidak valid'
-                });
-            }
-
-            stall.category = category.trim();
-        }
-
-        if (location !== undefined) {
-            stall.location =
-                typeof location === 'string'
-                    ? location.trim()
-                    : null;
-        }
-
-        if (description !== undefined) {
-            stall.description =
-                typeof description === 'string'
-                    ? description.trim()
-                    : null;
-        }
-
-        await stall.save();
-
-        return res.status(200).json({
-            success: true,
-            message: 'Data kantin berhasil diperbarui',
-            data: stall
-        });
-
-    } catch (error) {
-        console.error(
-            'PUT STALL ERROR:',
-            error
-        );
-
-        return res.status(500).json({
-            success: false,
-            message: 'Gagal memperbarui data kantin',
-            error:
-                error instanceof Error
-                    ? error.message
-                    : String(error)
-        });
     }
-});
-
+);
 
 /*
 ==================================================
 DELETE /api/stalls/:id
 Menghapus kantin
+- Hanya admin
 ==================================================
 */
-router.delete('/:id', async (req, res) => {
-    try {
-        const id = Number(req.params.id);
+router.delete(
+    '/:id',
+    authenticate,
+    validate(idParamSchema, 'params'),
+    authorize('admin'),
+    async (req, res, next) => {
+        try {
+            const id = Number(req.params.id);
 
-        if (
-            !Number.isInteger(id) ||
-            id <= 0
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'ID kantin tidak valid'
+            const stall = await Stall.findByPk(id);
+
+            if (!stall) {
+                throw new AppError(
+                    'Kantin tidak ditemukan',
+                    404
+                );
+            }
+
+            await stall.destroy();
+
+            res.status(200).json({
+                success: true,
+                message: 'Kantin berhasil dihapus'
             });
+        } catch (error) {
+            next(error);
         }
-
-        const stall = await Stall.findByPk(id);
-
-        if (!stall) {
-            return res.status(404).json({
-                success: false,
-                message: 'Kantin tidak ditemukan'
-            });
-        }
-
-        await stall.destroy();
-
-        return res.status(200).json({
-            success: true,
-            message: 'Kantin berhasil dihapus'
-        });
-
-    } catch (error) {
-        console.error(
-            'DELETE STALL ERROR:',
-            error
-        );
-
-        return res.status(500).json({
-            success: false,
-            message: 'Gagal menghapus kantin',
-            error:
-                error instanceof Error
-                    ? error.message
-                    : String(error)
-        });
     }
-});
-
+);
 
 export default router;
